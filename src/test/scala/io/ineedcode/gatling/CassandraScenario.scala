@@ -2,20 +2,22 @@ package io.ineedcode.gatling
 
 import scala.concurrent.duration.DurationInt
 
-import com.datastax.driver.core.{Host, Metadata, Row, Session, Cluster, ConsistencyLevel}
+import com.datastax.driver.core._
 
 import io.gatling.core.Predef._
 import io.gatling.core.scenario.Simulation
 
 import io.github.gatling.cql.Predef._
+import scala.collection.JavaConversions._
 
 
+// link https://github.com/maxdemarzi/neo_gatling/blob/master/neo4j/CreateNodes.scala
 class CassandraScenario extends Simulation {
 
-  val keyspace = "test_gatling"
+  val keyspace = "gatling_test"
   val table_name = "test_table"
-  val cluster = Cluster.builder().addContactPoint("127.0.0.1").build()
-  val session = cluster.connect(s"$keyspace")
+  val cluster = myCluster("127.0.0.1")
+  val session = cluster.connect()
 
 
   //  Your C* session
@@ -24,29 +26,28 @@ class CassandraScenario extends Simulation {
 
   //Setup
   session.execute(
-    s"""CREATE KEYSPACE IF NOT EXISTS $keyspace
-        WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor': '1'}""")
-
+    s"""
+      CREATE KEYSPACE IF NOT EXISTS $keyspace WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor': '1'}
+    """)
 
   session.execute(
     s"""
-        CREATE TABLE IF NOT EXISTS $table_name (
+        CREATE TABLE IF NOT EXISTS $keyspace.$table_name (
           id timeuuid,
           num int,
           str text,
           PRIMARY KEY (id)
         );
     """)
-  //It's generally not advisable to use secondary indexes in you schema
-  session.execute(
-    f"""CREATE INDEX IF NOT EXISTS $table_name%s_num_idx ON $table_name%s (num)""")
 
+  //It's generally not advisable to use secondary indexes in you schema
+  session.execute(f"""CREATE INDEX IF NOT EXISTS $table_name%s_num_idx ON $keyspace.$table_name%s (num)""")
 
   //Prepare your statement, we want to be effective, right?
-  val prepared = session.prepare(
+  val preparedInsert = session.prepare(
     s"""
-       INSERT INTO $table_name (id, num, str) VALUES (now(), ?, ?)
-    """.stripMargin)
+       INSERT INTO $keyspace.$table_name (id, num, str) VALUES (now(), ?, ?)
+    """)
 
 
   val random = new util.Random
@@ -57,20 +58,18 @@ class CassandraScenario extends Simulation {
       "randomNum" -> random.nextInt()
     ))
 
-  //Name your scenario
-  val scn = scenario("Two statements").repeat(2) {
+  val scn = scenario("Two statements").repeat(1) {
     feed(feeder)
       .exec(cql("simple SELECT")
-        // 'execute' can accept a string
-        // and understands Gatling expression language (EL), i.e. ${randomNum}
-        .execute("SELECT * FROM test_table WHERE num = ${randomNum}"))
+        .execute(session.prepare(s"SELECT * FROM ${keyspace}.${table_name} WHERE num = ?"))
+        .withParams("${randomNum}")
+        .consistencyLevel(ConsistencyLevel.ALL)
+      )
       .exec(cql("prepared INSERT")
-        // alternatively 'execute' accepts a prepared statement
-        .execute(prepared)
-        // you need to provide parameters for that (EL is supported as well)
+        .execute(preparedInsert)
         .withParams(Integer.valueOf(random.nextInt()), "${randomString}")
-        // and set a ConsistencyLevel optionally
-        .consistencyLevel(ConsistencyLevel.ANY))
+        .consistencyLevel(ConsistencyLevel.ANY)
+      )
   }
 
   setUp(
@@ -78,8 +77,21 @@ class CassandraScenario extends Simulation {
     scn.inject(atOnceUsers(10))
   ).protocols(cqlConfig)
 
+  after(cluster.close())
 
-  after(cluster.close()) // close session and stop associated threads started by the Java/Scala driver
 
+  def myCluster(node: String): Cluster = {
+    val cluster = Cluster.builder().addContactPoint(node).build()
+    val metadata: Metadata = cluster.getMetadata
+
+    println(s"Connected to cluster: ${metadata.getClusterName}")
+
+    for (host <- metadata.getAllHosts.groupBy(_.getDatacenter)) {
+      val x1: (Host) => String = a => s"${a.getAddress} - Rack + ${a.getRack}"
+      println(s"${host._1} | ${host._2.map(x1)}")
+    }
+
+    cluster
+  }
 
 }
