@@ -1,12 +1,9 @@
 package io.ineedcode.gatling
 
 import scala.concurrent.duration.DurationInt
-
 import com.datastax.driver.core._
-
 import io.gatling.core.Predef._
 import io.gatling.core.scenario.Simulation
-
 import io.github.gatling.cql.Predef._
 import scala.collection.JavaConversions._
 
@@ -21,15 +18,15 @@ class CassandraScenario extends Simulation {
 
 
   //  Your C* session
-  val cqlConfig = cql.session(session) //Initialize Gatling DSL with your session
+  val cqlConfig = cql.session(session)
 
-
-  //Setup
+  // ------- CREATE KEYSPACE
   session.execute(
     s"""
-      CREATE KEYSPACE IF NOT EXISTS $keyspace WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor': '1'}
-    """)
+        CREATE KEYSPACE IF NOT EXISTS $keyspace WITH replication = { 'class' : 'SimpleStrategy', 'replication_factor': '1'}
+      """)
 
+  // ------- CREATE TABLE
   session.execute(
     s"""
         CREATE TABLE IF NOT EXISTS $keyspace.$table_name (
@@ -38,12 +35,12 @@ class CassandraScenario extends Simulation {
           str text,
           PRIMARY KEY (id)
         );
-    """)
+      """)
 
-  //It's generally not advisable to use secondary indexes in you schema
+  // ------- CREATE INDEX
   session.execute(f"""CREATE INDEX IF NOT EXISTS $table_name%s_num_idx ON $keyspace.$table_name%s (num)""")
 
-  //Prepare your statement, we want to be effective, right?
+
   val preparedInsert = session.prepare(
     s"""
        INSERT INTO $keyspace.$table_name (id, num, str) VALUES (now(), ?, ?)
@@ -58,10 +55,10 @@ class CassandraScenario extends Simulation {
       "randomNum" -> random.nextInt()
     ))
 
-  val scn = scenario("Two statements").repeat(1) {
+  val scn = scenario("Two statements").repeat(100) {
     feed(feeder)
-      .exec(cql("simple SELECT")
-        .execute(session.prepare(s"SELECT * FROM ${keyspace}.${table_name} WHERE num = ?"))
+      .exec(cql("prepared SELECT")
+        .execute(session.prepare(s"SELECT * FROM $keyspace.$table_name WHERE num = ?"))
         .withParams("${randomNum}")
         .consistencyLevel(ConsistencyLevel.ALL)
       )
@@ -74,8 +71,18 @@ class CassandraScenario extends Simulation {
 
   setUp(
     //    scn.inject(rampUsersPerSec(100) to 1000 during (15 seconds))
-    scn.inject(atOnceUsers(10))
-  ).protocols(cqlConfig)
+    //    scn.inject(atOnceUsers(10))
+    scn.inject(rampUsers(100) over (10 seconds))
+  )
+    .assertions(
+      global.responseTime.max.lessThan(450),
+      global.successfulRequests.percent.greaterThan(95),
+      details("prepared SELECT").requestsPerSec.greaterThan(1000),
+      global.responseTime.percentile1.between(0, 100),
+      details("prepared INSERT").responseTime.percentile1.between(0, 100)
+    )
+    .protocols(cqlConfig)
+
 
   after(cluster.close())
 
@@ -87,7 +94,7 @@ class CassandraScenario extends Simulation {
     println(s"Connected to cluster: ${metadata.getClusterName}")
 
     for (host <- metadata.getAllHosts.groupBy(_.getDatacenter)) {
-      val x1: (Host) => String = a => s"${a.getAddress} - Rack + ${a.getRack}"
+      val x1: (Host) => String = a => s"${a.getAddress} - Rack: ${a.getRack}"
       println(s"${host._1} | ${host._2.map(x1)}")
     }
 
