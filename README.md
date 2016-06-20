@@ -12,3 +12,8 @@
     $ startRecorder
     $ lastReport
 ```
+
+
+##documentation
+
+http://gatling.io//#/cheat-sheet/2.2.1
