@@ -1,6 +1,6 @@
 import io.gatling.app.Gatling
 import io.gatling.core.config.GatlingPropertiesBuilder
-import io.ineedcode.gatling.CassandraScenario
+import io.ineedcode.gatling.CassandraSimulation
 
 object Engine extends App {
 
@@ -12,7 +12,7 @@ object Engine extends App {
   //  props.bodiesDirectory(IDEPathHelper.requestBodiesDirectory.toString())
   //  props.binariesDirectory(IDEPathHelper.binariesDirectory.toString())
 
-  props.simulationClass(classOf[CassandraScenario].getName)
+  props.simulationClass(classOf[CassandraSimulation].getName)
   //  println(classOf[CassandraScenario])
 
   Gatling.fromMap(props.build)
